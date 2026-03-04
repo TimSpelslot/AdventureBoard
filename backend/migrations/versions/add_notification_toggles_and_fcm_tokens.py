@@ -25,7 +25,7 @@ def upgrade():
             "fcm_tokens",
             sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
             sa.Column("user_id", sa.Integer(), nullable=False),
-            sa.Column("token", sa.Text(), nullable=False),
+            sa.Column("token", sa.String(512), nullable=False),
             sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=True),
             sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
             sa.PrimaryKeyConstraint("id"),

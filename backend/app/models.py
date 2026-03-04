@@ -23,7 +23,7 @@ class FCMToken(db.Model):
     
     # Create a real relationship to the User table
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    token = db.Column(db.Text, nullable=False, unique=True)
+    token = db.Column(db.String(512), nullable=False, unique=True)
     created_at = db.Column(db.DateTime, server_default=db.func.now())
 
     # Optional: allow us to see user info from a token object
@@ -42,7 +42,7 @@ class User(UserMixin, db.Model):
     privilege_level     = db.Column(db.Integer, nullable=False, default=0)
     personal_room       = db.Column(db.String(16), nullable=True)
     email               = db.Column(db.String(255), nullable=True)
-    profile_pic         = db.Column(db.Text, nullable=True)
+    profile_pic         = db.Column(db.String(512), nullable=True)
     karma               = db.Column(db.Integer, default=1000)
     story_player        = db.Column(db.Boolean, nullable=False, default=False)
 
