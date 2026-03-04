@@ -9,7 +9,6 @@
         ><span class="gt-sm">Earlier</span>
       </q-btn>
       <div class="text-h6 col-6 text-center">Wednesday {{ wednesdate }}</div>
-      <q-btn label="Enable Notifications" color="primary" @click="setupNotifications" />
       <q-btn
         icon-right="chevron_right"
         aria-label="Later"

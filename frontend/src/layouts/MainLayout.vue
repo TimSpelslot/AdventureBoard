@@ -9,6 +9,7 @@
         </div>
         <q-avatar icon="img:spelslot-logo.svg" size="50px"></q-avatar>
         <div>
+          <q-btn icon="notifications" color="primary" @click="setupNotifications" />
           <q-toggle class="q-mr-md" label="Noob" v-if="me?.privilege_level > 0 || droppedPrivileges" color="secondary" :modelValue="droppedPrivileges" @update:modelValue="togglePrivileges" />
           <q-spinner size="lg" v-if="adminActionsActive > 0" />
           <q-btn
