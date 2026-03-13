@@ -3,8 +3,7 @@
     <q-header elevated>
       <q-toolbar class="row justify-between">
         <div class="q-gutter-x-md">
-          <q-btn label="Home" icon="home" to="/" />
-          <q-btn label="Characters" icon="sym_o_chess_pawn" to="/characters" />
+          <q-btn label="Events" icon="home" to="/" />
           <q-btn label="FAQ" icon="help" to="/faq" />
         </div>
         <q-avatar icon="img:spelslot-logo.svg" size="50px"></q-avatar>
@@ -27,6 +26,9 @@
                 </q-item>
                 <q-separator v-if="me.privilege_level >= 2" />
                 <template v-if="me.privilege_level >= 2">
+                  <q-item to="/admin/users">
+                    <q-item-section>Approve users</q-item-section>
+                  </q-item>
                   <q-item
                     clickable
                     v-close-popup
@@ -40,19 +42,6 @@
                     @click="adminAction('reassign')"
                   >
                     <q-item-section>Reassigne players form the waitinglist</q-item-section>
-                  </q-item>
-                  <q-item
-                    clickable
-                    v-close-popup
-                    @click="adminAction('release')"
-                  >
-                    <q-item-section>Release assignments</q-item-section>
-                  </q-item>
-                  <q-item clickable v-close-popup @click="adminAction('reset')">
-                    <q-item-section>Unrelease assignments</q-item-section>
-                  </q-item>
-                  <q-item clickable v-close-popup @click="updateKarma()">
-                    <q-item-section>Update karma</q-item-section>
                   </q-item>
                   <q-item clickable v-close-popup @click="signups">
                     <q-item-section>See current signups</q-item-section>
@@ -125,9 +114,6 @@ export default defineComponent({
       me: null as null | {
         id: number;
         display_name: string;
-        world_builder_name: string;
-        dnd_beyond_name: string;
-        dnd_beyond_campaign: number;
         privilege_level: number;
         profile_pic: string;
       },
@@ -176,40 +162,6 @@ export default defineComponent({
       } finally {
         this.adminActionsActive--;
       }
-    },
-    updateKarma() {
-      // Calculate current week (Monday to Sunday)
-      const today = new Date();
-      const day = today.getDay();
-      const monday = new Date(today);
-      monday.setDate(today.getDate() - ((day + 6) % 7));
-      const sunday = new Date(monday);
-      sunday.setDate(monday.getDate() + 6);
-      
-      const formatDate = (d: Date) => d.toLocaleDateString('default', { month: 'numeric', day: 'numeric', year: 'numeric' });
-      const weekRange = `${formatDate(monday)} - ${formatDate(sunday)}`;
-
-      this.$q
-        .dialog({
-          title: 'Update Karma',
-          message:
-            `You are about to assign karma for the week of: ${weekRange}. 
-            Karma changes are cumulative. Running this multiple times for the same week will apply the karma adjustments repeatedly.`,
-          cancel: true,
-        })
-        .onOk(async () => {
-          this.adminActionsActive++;
-          try {
-            await this.$api.post('/api/update-karma');
-            this.forceRefresh++;
-            this.$q.notify({
-              message: 'Karma updated.',
-              type: 'positive',
-            });
-          } finally {
-            this.adminActionsActive--;
-          }
-        });
     },
     async optionallyFetchUser() {
       try {
@@ -262,14 +214,17 @@ export default defineComponent({
         } else {
           this.$q.notify({
             color: 'warning',
-            message: 'Could not get notification token.'
+            message: 'Could not get notification token. Check Firebase Web Push settings.'
           });
         }
       } catch (err) {
         console.error('Error enabling notifications:', err);
+        const details = err instanceof Error ? err.message : '';
         this.$q.notify({
           color: 'negative',
-          message: 'Failed to enable notifications.'
+          message: details
+            ? `Failed to enable notifications: ${details}`
+            : 'Failed to enable notifications.'
         });
       }
     },

@@ -85,6 +85,12 @@ uv sync --extra test
 uv run pytest
 ```
 
+One-off schema cleanup for single-event fork:
+```shell
+cd backend
+uv run python migrate_single_event_schema.py
+```
+
 Frontend tests (vitest):
 ```shell
 cd frontend

@@ -5,9 +5,6 @@
         <q-card-section class="q-gutter-lg">
           <div class="text-h6">User profile</div>
           <q-input v-model="display_name" label="Display name" />
-          <q-input v-model="world_builder_name" label="World builder name" />
-          <q-input v-model="dnd_beyond_name" label="D&D Beyond name" />
-          <div>D&D Beyond campaign: {{ me?.dnd_beyond_campaign }}</div>
           <q-separator class="q-my-md" />
 <div class="text-subtitle1 text-weight-bold">Notification Preferences</div>
 <q-list class="q-gutter-sm">
@@ -79,8 +76,6 @@ export default defineComponent({
     }
     return {
       display_name: me?.display_name,
-      world_builder_name: me?.world_builder_name,
-      dnd_beyond_name: me?.dnd_beyond_name,
       notify_new_adventure: me?.notify_new_adventure ?? true,
       notify_deadline: me?.notify_deadline ?? true,
       notify_assignments: me?.notify_assignments ?? true,
@@ -91,8 +86,6 @@ export default defineComponent({
     async save() {
       await this.$api.patch('/api/users/' + this.me.id, {
         display_name: this.display_name,
-        world_builder_name: this.world_builder_name,
-        dnd_beyond_name: this.dnd_beyond_name,
         notify_new_adventure: this.notify_new_adventure,
         notify_deadline: this.notify_deadline,
         notify_assignments: this.notify_assignments,

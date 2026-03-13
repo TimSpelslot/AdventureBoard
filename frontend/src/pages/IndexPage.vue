@@ -2,28 +2,30 @@
   <q-page>
     <div class="row items-center justify-center q-my-md q-mx-lg">
       <q-btn
+        v-if="showWeekNavigation"
         icon="chevron_left"
-        aria-label="Earlier"
+        :aria-label="labels.earlier"
         color="primary"
         @click="switchWeek(-1)"
-        ><span class="gt-sm">Earlier</span>
+        ><span class="gt-sm">{{ labels.earlier }}</span>
       </q-btn>
-      <div class="text-h6 col-6 text-center">Wednesday {{ wednesdate }}</div>
+      <div class="text-h6 col-6 text-center">{{ eventTypeTitle || 'Event' }} - {{ displayDateLabel }}</div>
       <q-btn
+        v-if="showWeekNavigation"
         icon-right="chevron_right"
-        aria-label="Later"
+        :aria-label="labels.later"
         color="primary"
         @click="switchWeek(1)"
-        ><span class="gt-sm">Later</span>
+        ><span class="gt-sm">{{ labels.later }}</span>
       </q-btn>
     </div>
     <div v-if="loading" class="column flex flex-center q-my-xl">
       <q-spinner size="xl" />
-      <div class="text-h6 q-mt-md text-center">Loading...</div>
+      <div class="text-h6 q-mt-md text-center">{{ labels.loading }}</div>
     </div>
     <q-card v-else-if="adventures.length == 0" class="q-mx-lg">
       <q-card-section class="text-center">
-        No sessions this week yet. Make one!
+        {{ labels.noSessions }}
       </q-card-section>
     </q-card>
     <div v-else class="row justify-evenly q-col-gutter-lg">
@@ -50,14 +52,6 @@
 
             <div class="row full-width justify-end">
               <q-chip
-                v-if="a.is_story_adventure"
-                label="Story Adventure"
-                color="warning"
-                text-color="dark"
-                :ripple="false"
-                class="q-mr-xs"
-              />
-              <q-chip
                 v-for="t in a.tags?.split(',')"
                 :key="t"
                 :label="t"
@@ -70,39 +64,7 @@
               <template v-if="a.short_description">
                  <div style="white-space: pre-line;">{{ a.short_description }}</div>
               </template>
-              <i v-else>No description</i>
-            </div>
-            <div class="row justify-between">
-              <div>
-                <q-rating
-                  v-model="a.rank_combat"
-                  :max="3"
-                  readonly
-                  size="2em"
-                  :icon="rankImage('combat')"
-                />
-                <q-tooltip transition-show="scale" transition-hide="scale">Combat</q-tooltip>
-              </div>
-              <div>
-                <q-rating
-                  v-model="a.rank_exploration"
-                  :max="3"
-                  readonly
-                  size="2em"
-                  :icon="rankImage('exploration')"
-                />
-                <q-tooltip transition-show="scale" transition-hide="scale">Exploration</q-tooltip>
-              </div>
-              <div>
-                <q-rating
-                  v-model="a.rank_roleplaying"
-                  :max="3"
-                  readonly
-                  size="2em"
-                  :icon="rankImage('roleplaying')"
-                />
-                <q-tooltip transition-show="scale" transition-hide="scale">Roleplaying</q-tooltip>
-              </div>
+              <i v-else>{{ labels.noDescription }}</i>
             </div>
             <q-list v-if="me?.privilege_level >= 2" class="adminDropTarget">
               <Container
@@ -121,16 +83,21 @@
               >
                 <template v-if="a.assignments.length > 0">
                   <Draggable v-for="p in a.assignments" :key="p.user.id">
-                    <q-item class="items-center round-borders character" :style="p.user.story_player ? 'border-color: var(--q-warning);' : ''">
+                    <q-item class="items-center round-borders character">
                       <q-avatar size="sm" class="q-mr-sm">
                         <img :src="p.user.profile_pic" />
                       </q-avatar>
                         <div class="q-mr-sm">
-                          <router-link :to="{name: 'playerCharacter', params: {id: p.user.id}}" class="default-text-color">
-                            {{ p.user.display_name }}
-                          </router-link>
-                          ({{ p.user.karma }})
+                          {{ p.user.display_name }}
                         </div>
+                      <q-btn
+                        size="sm"
+                        color="negative"
+                        class="q-mr-sm flat"
+                        icon="delete"
+                        @click="cancelAssignment(a.id, p.user.id)"
+                        round
+                      />
                       <q-btn
                         size="sm"
                         :icon="p.appeared ? 'check' : 'close'"
@@ -166,7 +133,7 @@
                   <q-item
                     class="text-subtitle1 text-center none-list non-selectable"
                   >
-                    No players assigned yet
+                    {{ labels.noPlayersAssigned }}
                   </q-item>
                 </template>
               </Container>
@@ -176,17 +143,7 @@
                 <q-avatar size="sm" class="q-mr-sm">
                   <img :src="p.user.profile_pic" />
                 </q-avatar>
-                <router-link
-                  :to="{ name: 'playerCharacter', params: { id: p.user.id } }"
-                  class="default-text-color"
-                  :style="
-                    p.user.story_player && me?.id === a.creator.id
-                      ? 'color: var(--q-warning);'
-                      : ''
-                  "
-                >
-                  {{ p.user.display_name }}
-                </router-link>
+                <div class="default-text-color">{{ p.user.display_name }}</div>
                 <q-btn
                   v-if="p.user.id == me?.id"
                   size="sm"
@@ -199,8 +156,7 @@
               </q-item>
             </q-list>
             <div class="row justify-between">
-              <div>{{ describeDuration(a) }}</div>
-              <div v-if="a.requested_room">Room: {{ a.requested_room }}</div>
+              <div>{{ labels.oneShot }}</div>
              </div>
             <div class="container">
               <div class="row justify-center q-gutter-sm" v-if="!isDateInPast(a)">
@@ -217,7 +173,7 @@
               </div>
               <div class="row justify-center q-my-md">
                 <q-btn
-                  label="More details"
+                  :label="labels.moreDetails"
                   icon="info"
                   @click="focussed = a"
                   color="primary"
@@ -248,7 +204,7 @@
                       <img :src="p.user.profile_pic" />
                     </q-avatar>
                     <div class="q-mr-sm">
-                      {{ p.user.display_name }} ({{ p.user.karma }})
+                      {{ p.user.display_name }}
                     </div>
                     <q-btn
                       size="sm" 
@@ -307,9 +263,9 @@
 
     <q-page-sticky position="bottom" :offset="[0, 18]">
       <q-btn
-        v-if="me"
+        v-if="me && me.privilege_level >= 1"
         fab
-        label="Make a new Adventure"
+        :label="labels.makeAdventure"
         icon="add"
         color="accent"
         @click="
@@ -325,14 +281,6 @@
           <div class="text-h6">{{ focussed.title }}</div>
           <q-separator />
           <q-chip
-            v-if="focussed.is_story_adventure"
-            label="Story Adventure"
-            color="warning"
-            text-color="dark"
-            :ripple="false"
-            class="q-mr-xs"
-          />
-          <q-chip
             v-for="t in focussed.tags?.split(',')"
             :key="t"
             :label="t"
@@ -346,64 +294,24 @@
               <td>{{ focussed.creator.display_name }}</td>
             </tr>
             <tr>
-              <td>Duration</td>
-              <td>{{ describeDuration(focussed) }}</td>
+              <td>{{ labels.duration }}</td>
+              <td>{{ labels.oneShot }}</td>
             </tr>
             <tr>
-              <td>Max players</td>
+              <td>{{ labels.maxPlayers }}</td>
               <td>{{ focussed.max_players }}</td>
-            </tr>
-            <tr>
-              <td>Combat</td>
-              <td>
-                <q-rating
-                  v-model="focussed.rank_combat"
-                  :max="3"
-                  readonly
-                  size="2em"
-                  :icon="rankImage('combat')"
-                />
-              </td>
-            </tr>
-            <tr>
-              <td>Exploration</td>
-              <td>
-                <q-rating
-                  v-model="focussed.rank_exploration"
-                  :max="3"
-                  readonly
-                  size="2em"
-                  :icon="rankImage('exploration')"
-                />
-              </td>
-            </tr>
-            <tr>
-              <td>Roleplaying</td>
-              <td>
-                <q-rating
-                  v-model="focussed.rank_roleplaying"
-                  :max="3"
-                  readonly
-                  size="2em"
-                  :icon="rankImage('roleplaying')"
-                />
-              </td>
-            </tr>
-            <tr v-if="focussed.requested_room">
-              <td>Room</td>
-              <td>{{ focussed.requested_room }}</td>
             </tr>
           </q-markup-table>
           <div class="description">
             <template v-if="focussed.short_description">{{
               focussed.short_description
             }}</template
-            ><i v-else>No description</i>
+            ><i v-else>{{ labels.noDescription }}</i>
           </div>
         </q-card-section>
         <template v-if="me?.privilege_level >= 2">
           <q-list >
-            <q-item class="q-pa-md">Signups (Not final assignments):</q-item>
+            <q-item class="q-pa-md">{{ labels.signupsNotFinal }}</q-item>
             <Container class="rounded-borders grid-container">
               <q-item
                 v-for="s in focussed.signups"
@@ -414,7 +322,7 @@
                   <img :src="s.user?.profile_pic" />
                 </q-avatar>
                 <div class="q-mr-sm">
-                  {{ s.user?.display_name }} ({{ s.user?.karma }}) - {{ choiceLabels[s.priority] }}
+                  {{ s.user?.display_name }} - {{ choiceLabels[s.priority] }}
                 </div>
               </q-item>
             </Container>
@@ -424,7 +332,7 @@
         <q-separator />
         <q-card-actions class="justify-end">
           <q-btn
-            label="Cancel signup"
+            :label="labels.cancelSignup"
             color="negative"
             v-if="focussed.id in mySignups"
             class="q-mr-md"
@@ -433,7 +341,7 @@
           <q-btn-dropdown
             split
             color="primary"
-            label="Sign up"
+            :label="labels.signUp"
             content-class="q-px-lg"
             @click="signup(focussed, 1)"
             :loading="saving"
@@ -470,6 +378,8 @@
           @eventChange="eventChange"
           @canClose="(v) => (addingAdventure = !v)"
           :editExisting="editAdventure"
+          :eventTypeId="Number(eventTypeId)"
+          :defaultDate="selectedDate"
         />
       </div>
     </q-dialog>
@@ -509,7 +419,6 @@
 import { defineComponent, inject } from 'vue';
 import { Container, Draggable } from 'vue3-smooth-dnd';
 import AddAdventure from '../components/AddAdventure.vue';
-import { getToken } from 'src/boot/firebase';
 
 const toLocalDateString = (d: Date): string => {
   const year = d.getFullYear();
@@ -527,29 +436,27 @@ export default defineComponent({
   name: 'IndexPage',
   components: { AddAdventure, Container, Draggable },
   emits: ['setErrors', 'startAdminAction', 'finishAdminAction'],
+  props: {
+    eventTypeId: {
+      type: String,
+      required: true,
+    },
+  },
   setup() {
     return {
       me: inject('me') as any,
       forceRefresh: inject('forceRefresh') as number,
-      choiceLabels: {
-        1: 'First choice',
-        2: 'Second choice',
-        3: 'Third choice',
-      },
     };
   },
   data() {
-    const today = new Date();
-    const day = today.getDay(); // Sunday = 0, Monday = 1, ..., Saturday = 6
-
-  // If today is Thursday (4) to Sunday (0), move to next week
-  if (day === 0 || day >= 4) {
-    today.setDate(today.getDate() + (8 - day) % 7); // Move to next Monday
-  } else {
-    today.setDate(today.getDate() - ((day + 6) % 7)); // Move to this week's Monday
-  }
+    const queryDate = (((this as any).$route?.query?.date as string) || '');
+    const baseDate = /^\d{4}-\d{2}-\d{2}$/.test(queryDate)
+      ? fromDateString(queryDate)
+      : new Date();
+    const monday = new Date(baseDate);
+    monday.setDate(baseDate.getDate() - ((baseDate.getDay() + 6) % 7));
     return {
-      weekStart: toLocalDateString(today),
+      weekStart: toLocalDateString(monday),
       adventures: [],
       focussed: null as any,
       addAdventure: false,
@@ -559,61 +466,92 @@ export default defineComponent({
       editAdventure: null,
       loadedSignups: false,
       mySignups: {} as { [adventure_id: number]: 1 | 2 | 3 },
+      eventTypeTitle: '',
+      selectedDate: queryDate,
+      selectedEventType: null as any,
     };
   },
   methods: {
-async setupNotifications() {
-  if (!this.me) {
-    this.$q.notify({
-      color: 'negative',
-      message: 'You need to be logged in to enable notifications.',
-      icon: 'error'
-    });
-    return;
-  }
-  try {
-    // 1. Request Browser Permission
-    // This triggers the browser's "Allow Notifications?" popup.
-    const permission = await Notification.requestPermission();
-    
-    if (permission !== 'granted') {
-      this.$q.notify({
-        color: 'negative',
-        message: 'Permission denied for notifications.',
-        icon: 'notifications_off'
-      });
-      return;
-    }
+    isDutchEventTitle(title: string): boolean {
+      const normalized = title.toLowerCase();
+      return normalized.includes('jeugd') || normalized.includes('junior');
+    },
+    formatDutchDate(dateStr: string): string {
+      const d = fromDateString(dateStr);
+      return new Intl.DateTimeFormat('nl-NL', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+      }).format(d);
+    },
+    ordinalDay(day: number): string {
+      const mod10 = day % 10;
+      const mod100 = day % 100;
+      if (mod10 === 1 && mod100 !== 11) return `${day}st`;
+      if (mod10 === 2 && mod100 !== 12) return `${day}nd`;
+      if (mod10 === 3 && mod100 !== 13) return `${day}rd`;
+      return `${day}th`;
+    },
+    formatEnglishDate(dateStr: string): string {
+      const d = fromDateString(dateStr);
+      const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'long' }).format(d);
+      const month = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(d);
+      return `${weekday} ${month} ${this.ordinalDay(d.getDate())}`;
+    },
+    getNthWeekdayOfMonth(year: number, monthIndex: number, weekday: number, weekOfMonth: number): Date | null {
+      const firstDay = new Date(year, monthIndex, 1);
+      const targetJsWeekday = (weekday + 1) % 7;
+      const offset = (targetJsWeekday - firstDay.getDay() + 7) % 7;
+      const dayNum = 1 + offset + (weekOfMonth - 1) * 7;
+      const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+      if (dayNum > lastDay) {
+        return null;
+      }
+      return new Date(year, monthIndex, dayNum);
+    },
+    getAdjacentSessionDate(offset: number): Date {
+      const baseDate = /^\d{4}-\d{2}-\d{2}$/.test(this.selectedDate)
+        ? fromDateString(this.selectedDate)
+        : new Date();
 
-    // 2. Get the unique FCM Token
-    // We pass our $messaging instance and the VAPID key.
-    const token = await getToken(this.$messaging, {
-      vapidKey: process.env.FIREBASE_VAPID_KEY
-    });
+      if (!this.isDutchEvent || !this.selectedEventType) {
+        const d = new Date(baseDate);
+        d.setDate(d.getDate() + offset * 7);
+        return d;
+      }
 
-    if (token) {
-      // 3. Send the token to the Flask Backend
-      // We use this.$api (Axios) which is already configured in your boot files.
-      const response = await this.$api.post('/api/notifications/save-token', {
-        token: token
-      });
+      const weekday = Number(this.selectedEventType.weekday);
+      const weekOfMonth = Number(this.selectedEventType.week_of_month);
+      const excludeJulyAugust = Boolean(this.selectedEventType.exclude_july_august);
 
-      this.$q.notify({
-        color: 'positive',
-        message: response.data.message || 'Notifications linked!',
-        icon: 'notifications_active'
-      });
-    } else {
-      console.error('No registration token available. Request permission to generate one.');
-    }
-  } catch (err) {
-    console.error('An error occurred while retrieving token. ', err);
-    this.$q.notify({
-      color: 'negative',
-      message: 'Failed to enable notifications.'
-    });
-  }
-},
+      let year = baseDate.getFullYear();
+      let monthIndex = baseDate.getMonth();
+      for (let i = 0; i < 36; i += 1) {
+        monthIndex += offset > 0 ? 1 : -1;
+        if (monthIndex > 11) {
+          monthIndex = 0;
+          year += 1;
+        }
+        if (monthIndex < 0) {
+          monthIndex = 11;
+          year -= 1;
+        }
+
+        const month = monthIndex + 1;
+        if (excludeJulyAugust && (month === 7 || month === 8)) {
+          continue;
+        }
+
+        const candidate = this.getNthWeekdayOfMonth(year, monthIndex, weekday, weekOfMonth);
+        if (candidate) {
+          return candidate;
+        }
+      }
+
+      const fallback = new Date(baseDate);
+      fallback.setDate(fallback.getDate() + offset * 7);
+      return fallback;
+    },
     async fetch(reloadSignups: boolean) {
       if(!this.loadedSignups) {
         reloadSignups = true;
@@ -624,9 +562,10 @@ async setupNotifications() {
           '/api/adventures?week_start=' +
             this.weekStart +
             '&week_end=' +
-            this.weekEnd
+            this.weekEnd +
+            '&event_type_id=' +
+            this.eventTypeId
         );
-        this.annoyUserToFinishProfileSetup();
         if (this.me && reloadSignups) {
           const resp = await this.$api.get('/api/signups?user=' + this.me.id);
           this.mySignups = {};
@@ -643,6 +582,12 @@ async setupNotifications() {
         this.loading = false;
       }
     },
+    async fetchEventTypeMeta() {
+      const resp = await this.$api.get('/api/event-types');
+      const selected = resp.data.find((et: any) => String(et.id) === String(this.eventTypeId));
+      this.eventTypeTitle = selected?.title || '';
+      this.selectedEventType = selected || null;
+    },
     isDateInPast(a: {date: string}) {
       const currentDay = toLocalDateString(new Date());
       const sessionDay = toLocalDateString(fromDateString(a.date));
@@ -656,7 +601,7 @@ async setupNotifications() {
           priority: prio,
         });
         this.$q.notify({
-          message: 'Your signup is submitted!',
+          message: this.labels.signupSubmitted,
           type: 'positive',
         });
         await this.fetch(true);
@@ -669,15 +614,19 @@ async setupNotifications() {
       this.fetch(false);
     },
     switchWeek(offset: number) {
-      const d = fromDateString(this.weekStart);
-      d.setDate(d.getDate() + offset * 7);
-      this.weekStart = toLocalDateString(d);
-    },
-    describeDuration(a: { num_sessions: number }): string {
-      if (a.num_sessions == 1) {
-        return 'One shot';
-      }
-      return a.num_sessions + ' weeks';
+      const targetDate = this.getAdjacentSessionDate(offset);
+      this.selectedDate = toLocalDateString(targetDate);
+
+      const monday = new Date(targetDate);
+      monday.setDate(targetDate.getDate() - ((targetDate.getDay() + 6) % 7));
+      this.weekStart = toLocalDateString(monday);
+
+      this.$router.replace({
+        query: {
+          ...this.$route.query,
+          date: this.selectedDate,
+        },
+      });
     },
     isWaitinglist(a: { is_waitinglist: number }): boolean {
       return a.is_waitinglist >= 1;
@@ -685,9 +634,9 @@ async setupNotifications() {
     cancelAssignment(adventure_id: number, user_id?: number) {
       this.$q
         .dialog({
-          title: 'Cancel Assignment',
+          title: this.labels.cancelAssignmentTitle,
           message:
-            'Are you sure you want to give up your place on this adventure? You will not be able to reclaim it and the place will be assigned to someone else. Please note that this option is only for emergency',
+            this.labels.cancelAssignmentMessage,
           cancel: true,
         })
         .onOk(async () => {
@@ -704,27 +653,11 @@ async setupNotifications() {
             headers: { 'Content-Type': 'application/json' }
           });
           this.$q.notify({
-            message: "And you're off!",
+            message: this.labels.cancelledAssignment,
             type: 'positive',
           });
           this.fetch(false);
         });
-    },
-    annoyUserToFinishProfileSetup() {
-      if (!this.me || this.me.dnd_beyond_name) return;
-      this.$q
-        .dialog({
-          title: 'Please complete your profile',
-          message:
-            'Your profile is missing vital information as for example your D&D Beyond name. Please go to your profile page and fill in all information before signing up for adventures.',
-          cancel: true,
-          ok: {
-            label: 'Go to Profile',
-            color: 'positive',
-            to: '/profile',
-          }
-        })
-
     },
     isInAdventure(a: any, id: any) {
       if (id === undefined) return false;
@@ -779,28 +712,85 @@ async setupNotifications() {
         this.$emit('finishAdminAction');
       }
       this.fetch(false);
-    },
-    rankImage(what: 'combat' | 'exploration' | 'roleplaying') {
-      const prefix = this.$q.dark.isActive ? 'img:/light/' : 'img:/dark/';
-      switch(what) {
-        case 'combat':
-          return prefix + 'spiked-dragon-head.svg';
-        case 'exploration':
-          return prefix + 'dungeon-gate.svg';
-        case 'roleplaying':
-          return prefix + 'drama-masks.svg';
-      }
     }
   },
   computed: {
-    wednesdate() {
-      const d = fromDateString(this.weekStart);
-      d.setDate(d.getDate() + 2);
-
-      const result = toLocalDateString(d);
-      const today = toLocalDateString(new Date());
-
-      return result === today ? 'this week' : result;
+    isDutchEvent(): boolean {
+      return this.isDutchEventTitle(this.eventTypeTitle || '');
+    },
+    showWeekNavigation(): boolean {
+      if (this.selectedEventType && typeof this.selectedEventType.is_single_event === 'boolean') {
+        return !this.selectedEventType.is_single_event;
+      }
+      return true;
+    },
+    labels() {
+      if (this.isDutchEvent) {
+        return {
+          earlier: 'Eerder',
+          later: 'Later',
+          loading: 'Laden...',
+          noSessions: 'Nog geen sessies deze week. Maak er een!',
+          noDescription: 'Geen beschrijving',
+          noPlayersAssigned: 'Nog geen spelers toegewezen',
+          oneShot: 'One-shot',
+          moreDetails: 'Meer details',
+          makeAdventure: 'Nieuw avontuur maken',
+          duration: 'Duur',
+          maxPlayers: 'Max spelers',
+          signupsNotFinal: 'Inschrijvingen (geen definitieve indeling):',
+          cancelSignup: 'Inschrijving annuleren',
+          signUp: 'Inschrijven',
+          signupSubmitted: 'Je inschrijving is verstuurd!',
+          cancelAssignmentTitle: 'Toewijzing annuleren',
+          cancelAssignmentMessage:
+            'Weet je zeker dat je je plek op dit avontuur wilt opgeven? Je kunt deze plek niet terugkrijgen en de plek wordt aan iemand anders toegewezen. Gebruik dit alleen in noodgevallen.',
+          cancelledAssignment: 'Je bent uitgeschreven!',
+          choices: {
+            1: 'Eerste keuze',
+            2: 'Tweede keuze',
+            3: 'Derde keuze',
+          },
+        };
+      }
+      return {
+        earlier: 'Earlier',
+        later: 'Later',
+        loading: 'Loading...',
+        noSessions: 'No sessions this week yet. Make one!',
+        noDescription: 'No description',
+        noPlayersAssigned: 'No players assigned yet',
+        oneShot: 'One shot',
+        moreDetails: 'More details',
+        makeAdventure: 'Make a new Adventure',
+        duration: 'Duration',
+        maxPlayers: 'Max players',
+        signupsNotFinal: 'Signups (Not final assignments):',
+        cancelSignup: 'Cancel signup',
+        signUp: 'Sign up',
+        signupSubmitted: 'Your signup is submitted!',
+        cancelAssignmentTitle: 'Cancel Assignment',
+        cancelAssignmentMessage:
+          'Are you sure you want to give up your place on this adventure? You will not be able to reclaim it and the place will be assigned to someone else. Please note that this option is only for emergency',
+        cancelledAssignment: "And you're off!",
+        choices: {
+          1: 'First choice',
+          2: 'Second choice',
+          3: 'Third choice',
+        },
+      };
+    },
+    choiceLabels() {
+      return this.labels.choices;
+    },
+    displayDateLabel() {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(this.selectedDate)) {
+        if (this.isDutchEvent) {
+          return this.formatDutchDate(this.selectedDate);
+        }
+        return this.formatEnglishDate(this.selectedDate);
+      }
+      return this.isDutchEvent ? `Week van ${this.weekStart}` : `Week of ${this.weekStart}`;
     },
     weekEnd() {
       const d = fromDateString(this.weekStart);
@@ -809,6 +799,19 @@ async setupNotifications() {
     },
   },
   watch: {
+    '$route.query.date': {
+      handler(date: string | undefined) {
+        if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          return;
+        }
+        this.selectedDate = date;
+        const baseDate = fromDateString(date);
+        const monday = new Date(baseDate);
+        monday.setDate(baseDate.getDate() - ((baseDate.getDay() + 6) % 7));
+        this.weekStart = toLocalDateString(monday);
+      },
+      immediate: true,
+    },
     weekStart: {
       async handler() {
         await this.fetch(false);
@@ -818,6 +821,13 @@ async setupNotifications() {
     forceRefresh() {
       this.fetch(true);
     },
+    eventTypeId() {
+      this.fetch(true);
+      this.fetchEventTypeMeta();
+    },
+  },
+  async mounted() {
+    await this.fetchEventTypeMeta();
   },
 });
 </script>

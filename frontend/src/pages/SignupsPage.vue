@@ -12,19 +12,15 @@
     >
       <template v-slot:body-cell-avatar="props">
         <q-td :props="props">
-          <router-link :to="{name: 'playerCharacter', params: {id: props.row.dnd_beyond_name || 'unknown'}}" v-if="props.value">
-            <q-avatar>
-              <img :src="props.value" />
-            </q-avatar>
-          </router-link>
+          <q-avatar v-if="props.value">
+            <img :src="props.value" />
+          </q-avatar>
         </q-td>
       </template>
 
       <template v-slot:body-cell-name="props">
         <q-td :props="props">
-          <router-link :to="{name: 'playerCharacter', params: {id: props.row.dnd_beyond_name || 'unknown'}}" class="default-text-color">
-            {{ props.value }}
-          </router-link>
+          {{ props.value }}
         </q-td>
       </template>
     </q-table>

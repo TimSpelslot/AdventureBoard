@@ -1,23 +1,15 @@
 import { boot } from 'quasar/wrappers';
 import { initializeApp } from 'firebase/app';
-import { getMessaging, getToken, Messaging } from 'firebase/messaging';
+import { getMessaging, getToken, isSupported, Messaging } from 'firebase/messaging';
 import { initFCM } from '../lib/fcm';
+import { getFirebaseWebConfig, getMissingFirebaseConfigKeys } from '../lib/firebaseConfig';
 
-// 1. Get these values from your Firebase Console:
-// Project Settings > General > Your Apps (Web App)
-const firebaseConfig = {
-  apiKey: process.env.FIREBASE_API_KEY,
-  authDomain: process.env.FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.FIREBASE_PROJECT_ID,
-  storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.FIREBASE_APP_ID,
-  measurementId: process.env.FIREBASE_MEASUREMENT_ID
-};
+const firebaseConfig = getFirebaseWebConfig();
 
-// 2. Initialize Firebase
-const firebaseApp = initializeApp(firebaseConfig);
-const messaging = getMessaging(firebaseApp);
+const missingConfig = getMissingFirebaseConfigKeys(firebaseConfig);
+const firebaseApp = missingConfig.length === 0
+  ? initializeApp(firebaseConfig)
+  : null;
 
 // 3. Extend the Vue interface so TypeScript knows about $messaging
 declare module '@vue/runtime-core' {
@@ -27,9 +19,26 @@ declare module '@vue/runtime-core' {
 }
 
 export default boot(({ app }) => {
-  app.config.globalProperties.$messaging = messaging;
-  initFCM(messaging, process.env.FIREBASE_VAPID_KEY);
+  void (async () => {
+    if (missingConfig.length > 0 || !firebaseApp) {
+      console.warn(
+        `Firebase config is incomplete. Missing: ${missingConfig.join(', ')}. ` +
+          'Set FB_* values in frontend/.env and restart Quasar dev server.'
+      );
+      return;
+    }
+
+    const supported = await isSupported();
+    if (!supported) {
+      console.warn('Firebase messaging is not supported in this browser.');
+      return;
+    }
+
+    const messaging = getMessaging(firebaseApp);
+    app.config.globalProperties.$messaging = messaging;
+    initFCM(messaging, process.env.FIREBASE_VAPID_KEY);
+  })();
 });
 
 // We export these for direct use in the component logic
-export { messaging, getToken };
+export { getToken };

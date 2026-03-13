@@ -610,8 +610,7 @@ document.getElementById('adventure-form').addEventListener('submit', async (e) =
     requested_players: selectedPlayerIds,
     date: date.toISOString().split('T')[0], // Format as YYYY-MM-DD
     repeat: repeat,
-    tags: "#tags",
-    requested_room: "A"
+    tags: "#tags"
   };
 
   // Send the request to the API

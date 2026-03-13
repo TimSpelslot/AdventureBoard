@@ -97,6 +97,8 @@ def create_app(config_file=None):
     db.init_app(app)
     with app.app_context():
         db.create_all()
+        ensure_event_type_schema_compat()
+        ensure_default_event_types()
 
     # --- Migrations setup ---
     migrate.init_app(app, db)
@@ -150,7 +152,6 @@ def create_app(config_file=None):
 
     # --- Cronjobs ---   
     a_d, a_h = config['TIMING']['assignment_day'].split("@")
-    r_d, r_h = config['TIMING']['release_day'].split("@")
     _weekday_names = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
     _a_weekday_idx = _weekday_names.index(a_d[:3].lower()) if a_d[:3].lower() in _weekday_names else 2
     _nudge_hour = (int(a_h) - 4) % 24
@@ -160,15 +161,7 @@ def create_app(config_file=None):
     def cron_make_assignments():
         with app.app_context():
             app.logger.info("--- Triggering scheduled 'make assignment' job ---")
-            reassign_karma()
             assign_players_to_adventures()
-            assign_rooms_to_adventures()
-
-    @ap_scheduler.task('cron', id='release_assignment', day_of_week=r_d, hour=r_h)
-    def cron_release_assignments():
-        with app.app_context():
-            app.logger.info("--- Triggering scheduled 'release assignment' job ---")
-            release_assignments()
 
     @ap_scheduler.task('cron', id='deadline_nudge', day_of_week=_nudge_day, hour=_nudge_hour)
     def cron_deadline_nudge():

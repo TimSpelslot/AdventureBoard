@@ -2,11 +2,46 @@ from datetime import datetime, timedelta, date
 from flask import current_app
 from collections import defaultdict
 from sqlalchemy.orm import joinedload
+from sqlalchemy import func, inspect, text
 import calendar
 
 from .models import *
-from .email import notify_user, notifications_enabled
 from firebase_admin import messaging
+
+
+def ensure_event_type_schema_compat():
+    """Best-effort compatibility patch for legacy DBs missing key event-type columns."""
+    try:
+        inspector = inspect(db.engine)
+        table_names = set(inspector.get_table_names())
+        conn = db.session.connection()
+
+        if "adventures" in table_names:
+            adventure_cols = {c["name"] for c in inspector.get_columns("adventures")}
+            if "event_type_id" not in adventure_cols:
+                current_app.logger.warning(
+                    "Schema compat: missing adventures.event_type_id, applying ALTER TABLE."
+                )
+                conn.execute(text("ALTER TABLE adventures ADD COLUMN event_type_id INTEGER NULL"))
+
+        if "event_types" in table_names:
+            event_type_cols = {c["name"] for c in inspector.get_columns("event_types")}
+            if "is_single_event" not in event_type_cols:
+                current_app.logger.warning(
+                    "Schema compat: missing event_types.is_single_event, applying ALTER TABLE."
+                )
+                conn.execute(
+                    text(
+                        "ALTER TABLE event_types ADD COLUMN is_single_event BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                )
+
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.warning(
+            "Schema compat patch failed for event-type columns: %s", exc
+        )
 
 def is_admin(user):
     return user.is_authenticated and user.privilege_level >= 2
@@ -15,6 +50,71 @@ def get_next_wednesday(today=None):
     today = today or date.today()
     days_ahead = (2 - today.weekday() + 7) % 7  # 2 is Wednesday
     return today if days_ahead == 0 else today + timedelta(days=days_ahead)
+
+
+def get_nth_weekday_of_month(year: int, month: int, weekday: int, week_of_month: int):
+    """Return date for nth weekday in a month, or None if it does not exist."""
+    first_day = date(year, month, 1)
+    offset = (weekday - first_day.weekday() + 7) % 7
+    day_num = 1 + offset + (week_of_month - 1) * 7
+    last_day = calendar.monthrange(year, month)[1]
+    if day_num > last_day:
+        return None
+    return date(year, month, day_num)
+
+
+def get_next_date_for_event_type(event_type, today=None):
+    """Compute the next date for an event type with a monthly nth-weekday rule."""
+    today = today or date.today()
+
+    year = today.year
+    month = today.month
+
+    for _ in range(36):
+        if not (event_type.exclude_july_august and month in (7, 8)):
+            candidate = get_nth_weekday_of_month(
+                year,
+                month,
+                int(event_type.weekday),
+                int(event_type.week_of_month),
+            )
+            if candidate and candidate >= today:
+                return candidate
+
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+
+    return today
+
+
+def ensure_default_event_types():
+    """Create default event types once if none are configured yet."""
+    if db.session.scalar(db.select(func.count(EventType.id))) > 0:
+        return
+
+    defaults = [
+        EventType(
+            title="Dungeons & Dragons Jeugd 12-18",
+            description="Elke eerste zondag van de maand, behalve juli en augustus.",
+            weekday=6,
+            week_of_month=1,
+            exclude_july_august=True,
+            sort_order=1,
+        ),
+        EventType(
+            title="Dungeons & Dragons Junior 8-12",
+            description="Elke tweede woensdag van de maand, behalve juli en augustus.",
+            weekday=2,
+            week_of_month=2,
+            exclude_july_august=True,
+            sort_order=2,
+        ),
+    ]
+
+    db.session.add_all(defaults)
+    db.session.commit()
 
 def get_this_week(today=None):
     """
@@ -57,178 +157,42 @@ def get_this_month(today=None):
 
     return start_of_month, end_of_month
     
-def check_release(adventures):
-    return (len(adventures) > 0 and adventures[-1].release_assignments)
+WAITING_LIST_NAME = "Waiting List"
 
-def release_assignments(today=None):
-    today = today or date.today()
-    start_of_week, end_of_week = get_upcoming_week(today)
-    try:
-        adventures = (
-            db.session.scalars(
-                db.select(Adventure)
-                .options(db.selectinload(Adventure.assignments))  # eager load users
-                .where(
-                    Adventure.date >= start_of_week,
-                    Adventure.date <= end_of_week,
-                )
-            ).all()
-        )
 
-        # Update release_assignments for these adventures
-        for adventure in adventures:
-            adventure.release_assignments = True
-
-        # Commit the update before notifications
-        db.session.commit()
-# ... after your db.session.commit() ...
-        current_app.logger.info(
-            f"Releasing assignments for adventures between {start_of_week} and {end_of_week}: #{len(adventures)}: {[adventure.title for adventure in adventures]}"
-        )
-
-        # 1. Fetch the adventures again (already in your code)
-        adventures_to_notify = db.session.scalars(
-            db.select(Adventure)
-            .options(db.selectinload(Adventure.assignments).selectinload(Assignment.user))
-            .where(
-                Adventure.date >= start_of_week,
-                Adventure.date <= end_of_week,
-                Adventure.release_assignments == True
-            )
-        ).all()
-
-        # 2. Track who we've notified to avoid double-poking people
-        notified_users = set()
-
-        for adventure in adventures_to_notify:
-            for assignment in adventure.assignments:
-                user = assignment.user
-                if user and user.id not in notified_users:
-                    # SEND FCM REGARDLESS OF EMAIL CONFIG
-                    try:
-                        send_fcm_notification(user, "Assignment Released!", f"You have been assigned to {adventure.title}")
-                        current_app.logger.info(f"FCM sent to {user.display_name}")
-                    except Exception as fcm_err:
-                        current_app.logger.error(f"FCM failed for {user.display_name}: {fcm_err}")
-
-                    # Only send email if the config allows it
-                    if notifications_enabled(current_app.config.get("EMAIL")):
-                        notify_user(user, f"You have been assigned to {adventure.title}")
-                    
-                    notified_users.add(user.id)
-        else:
-            current_app.logger.info("Notifications where disabled. Skipped email notifications.")
-
-    except Exception as e:
-        db.session.rollback()
-        raise e
-    
-def reset_release(today=None):
-    today = today or date.today()
-    start_of_week, end_of_week = get_upcoming_week(today)
-    try:
-        stmt = (
-            db.update(Adventure)
-            .filter(
-                Adventure.date >= start_of_week,
-                Adventure.date <= end_of_week,
-            )
-            .values(release_assignments=False)
-        )
-        db.session.execute(stmt)
-        current_app.logger.info(f"Reset release for adventures between {start_of_week} and {end_of_week}")
-        db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        raise e  
-    
-
-WAITING_LIST_NAME = "Waiting List" # unique name used to create the waiting-list adventure
-def make_waiting_list(today=None) -> Adventure:
-    """
-    Ensure a waiting-list Adventure exists in the DB and return it.
-    """
-    today = today or date.today()
-    next_wed = get_next_wednesday(today)
-
-    # Try to find an existing waiting-list adventure
+def make_waiting_list_for_event(event_type_id: int | None, target_date: date) -> Adventure:
+    """Ensure a waiting-list Adventure exists for a specific event type and date."""
     existing_waiting_list = db.session.execute(
-        db.select(Adventure).where(Adventure.is_waitinglist == 1)
+        db.select(Adventure).where(
+            Adventure.is_waitinglist == 1,
+            Adventure.date == target_date,
+            Adventure.event_type_id == event_type_id,
+        )
     ).scalars().first()
-    if existing_waiting_list and existing_waiting_list.date == next_wed:
-        current_app.logger.info(f"Found existing waiting list adventure: {existing_waiting_list} on the {existing_waiting_list.date}, skipping creation.")
-        return existing_waiting_list
-    
-    if existing_waiting_list:
-        existing_waiting_list.is_waitinglist = 2 # Mark as "was waiting list"
-        db.session.flush()
-        current_app.logger.info(f"Found existing waiting list adventure: {existing_waiting_list}, marking as old and creating a new one.")
 
-    # Create a waiting-list adventure and return it
+    if existing_waiting_list:
+        return existing_waiting_list
+
     waiting_list = Adventure.create(
-                title=WAITING_LIST_NAME,
-                max_players=128,
-                short_description='',
-                date=next_wed,
-                is_waitinglist=1, # Mark as waiting list
-            )
+        title=WAITING_LIST_NAME,
+        max_players=128,
+        short_description='',
+        date=target_date,
+        is_waitinglist=1,
+        event_type_id=event_type_id,
+    )
     db.session.add(waiting_list)
     db.session.flush()
     return waiting_list
-    
 
-def assign_rooms_to_adventures(today=None):
+
+def make_waiting_list(today=None) -> Adventure:
+    """Backward-compatible helper for the next Wednesday default waiting list."""
     today = today or date.today()
-    start_of_week, end_of_week = get_upcoming_week(today)
-    possible_rooms = current_app.config.get("ROOMS", ["A", "B", "C", "D", "E", "Comp", "Hall"])
-    try:
-        this_weeks_adventures = (
-            db.session.execute(
-                db.select(Adventure)
-                .filter(
-                    Adventure.date >= start_of_week,
-                    Adventure.date <= end_of_week,
-                    Adventure.is_waitinglist == 0,  # Exclude waiting list
-                )
-                .order_by(
-                    func.random(), # Shuffle
-                )
-            ).scalars().all()
-        )
-        assigned_adventures = []
-        # First, handle personal rooms
-        for adventure in this_weeks_adventures:
-            if adventure.creator.personal_room is not None:
-                adventure.requested_room = adventure.creator.personal_room
-                assigned_adventures.append(adventure)
-                try:
-                    possible_rooms.remove(adventure.requested_room)
-                except ValueError:
-                    pass  # Room wasn’t in pool, ignore
-
-        # Assign remaining rooms to adventures without personal rooms
-        unassigned_adventures = [
-            adv for adv in this_weeks_adventures if adv not in assigned_adventures
-        ]
-        for adventure in unassigned_adventures:
-            if possible_rooms:
-                adventure.requested_room = possible_rooms.pop()
-            assigned_adventures.append(adventure)
-
-        # Flush changes so they're tracked before logging
-        db.session.flush()
-
-        current_app.logger.info(
-            f"Assigned rooms to adventures between {start_of_week} and {end_of_week}: "
-            f"#{len(assigned_adventures)}: "
-            f"{[{adv.title, adv.requested_room} for adv in assigned_adventures]}"
-        )
-
-        db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        raise e
+    next_wed = get_next_wednesday(today)
+    return make_waiting_list_for_event(None, next_wed)
     
+
 def try_to_signup_user_for_adventure(taken_places, players_signedup_not_assigned, adventure, user, assignment_map, preference_place=None):
     """
     Attempts to sign up a user for an adventure.
@@ -260,18 +224,13 @@ def try_to_signup_user_for_adventure(taken_places, players_signedup_not_assigned
 
 def assign_players_to_adventures(today=None):
     """
-    Creates assignments for players that signed up this week. Working in 6 rounds:
-    0. Assign DM-requested players who have signed up for the adventure (highest priority)
-    1. Signup all players that played last week, if they try to signup again for an ongoing adventure.
-    2. Assign all story players sorted by karma.
-    3. Signup all remaining players ranked by their karma to the first available adventure they signed up for according to there priority.
-    4. Signup all remaining players ranked by their karma to any available adventure. Sorted by random.
-    5. Signup the rest of the players to the waiting list.
-    This means that a player with more karma will always be preferred also if the adventure was a lower priority of his.
+    Creates assignments for players that signed up this week. Working in 3 rounds:
+    1. Signup players by signup priority.
+    2. Signup all remaining players to any available adventure.
+    3. Signup the rest of the players to the waiting list.
     """
     today = today or date.today()
     start_of_week, end_of_week = get_upcoming_week(today)
-    start_of_month, end_of_month = get_this_month(today)
     current_app.logger.info(f" >--- Assigning players from waiting list for week {start_of_week} to {end_of_week} ---< ")
     # create a placeholder that will track how many places are already taken per adventure
     taken_places = defaultdict(int)
@@ -304,19 +263,6 @@ def assign_players_to_adventures(today=None):
         .filter(Adventure.date >= start_of_week, Adventure.date <= end_of_week)
     )
 
-    # Subquery: get number of signups per user this month
-    monthly_signup_count = (
-        db.select(func.count(Signup.id))
-        .join(Signup.adventure)
-        .filter(
-            Signup.user_id == User.id,  # correlate to outer User
-            Adventure.date >= start_of_month,
-            Adventure.date <= end_of_month,
-        )
-        .correlate(User)
-        .scalar_subquery()
-    )
-
     # Main query: players signed up this week but NOT in assigned_ids_subq
     players_signedup_not_assigned = list(
         db.session.execute(
@@ -331,11 +277,7 @@ def assign_players_to_adventures(today=None):
             .options(
                 db.contains_eager(User.signups).contains_eager(Signup.adventure)
             )
-            .order_by(
-                User.karma.desc(),              # 3. Karma
-                monthly_signup_count.desc(),    # 2. This month's signups number
-                func.random(),                  # 1. Random                
-            )
+            .order_by(func.random())
         )
         .unique()   # ensures deduplication when eager-loading collections
         .scalars()
@@ -344,94 +286,17 @@ def assign_players_to_adventures(today=None):
     current_app.logger.info(f"Players signed up for the week {start_of_week} to {end_of_week}:   #{len(players_signedup_not_assigned)}: {[dict({user: user.signups}) for user in players_signedup_not_assigned]} ")
     MAX_PRIORITY = 3
     
-    # -- Round 0: Assign DM-requested players who have signed up --
-    # Get all adventures with requested players this week
-    adventures_with_requests = (
-        db.session.execute(
-            db.select(Adventure)
-            .join(AdventureRequestedPlayer)
-            .filter(
-                Adventure.date >= start_of_week,
-                Adventure.date <= end_of_week,
-                Adventure.is_waitinglist == 0  # Exclude waiting list
-            )
-            .distinct()
-        )
-        .scalars()
-        .all()
-    )
-    
-    round_ = []
-    for adventure in adventures_with_requests:
-        # Get requested players for this adventure
-        requested_player_ids = [
-            rp.user_id for rp in adventure.requested_players
-        ]
-        
-        # Find requested players who have signed up for this adventure and are not yet assigned
-        for user in list(players_signedup_not_assigned):
-            if user.id in requested_player_ids:
-                # Check if they signed up for this specific adventure
-                signup = next(
-                    (s for s in user.signups if s.adventure_id == adventure.id),
-                    None
-                )
-                if signup:
-                    # They signed up for this adventure - assign them with their priority
-                    prio = signup.priority
-                    if try_to_signup_user_for_adventure(taken_places, players_signedup_not_assigned, adventure, user, assignment_map, preference_place=prio):
-                        round_.append(user.display_name)
-                        current_app.logger.info(f"Assigned DM-requested player {user.display_name} to {adventure.title}")
-    
-    current_app.logger.info(f"- Players assigned in round 0 (DM-requested): #{len(round_)}: {round_} => {dict(taken_places)}")
-    
     # -- First round of assigning players --
-    # Assign all players that already played last week.
+    # Assign all players by priority.
     round_ = []
-    
-    # go through priorities one by one
     for prio in range(1, MAX_PRIORITY + 1):
         for user in list(players_signedup_not_assigned):
-            # For the current signup per player check if the player was already assigned for the predecessor of this adventure
             for signup in [s for s in user.signups if s.priority == prio]:
-                pre = signup.adventure.predecessor
-                if pre and any(a.user_id == user.id for a in pre.assignments):
-                    adventure = signup.adventure
-                    if try_to_signup_user_for_adventure(taken_places, players_signedup_not_assigned, adventure, user, assignment_map, preference_place=prio): 
-                        round_.append(user.display_name)
-                        break
+                adventure = signup.adventure
+                if try_to_signup_user_for_adventure(taken_places, players_signedup_not_assigned, adventure, user, assignment_map, preference_place=prio): 
+                    round_.append(user.display_name)
+                    break
     current_app.logger.info(f"- Players assigned in round 1: #{len(round_)}: {round_} => {dict(taken_places)}")
-
-    # -- Second round of assigning players --
-    # Assign all story players sorted by karma, but only on story adventures.
-    round_ = []
-    # go through priorities one by one
-    for prio in range(1, MAX_PRIORITY + 1):
-        for user in list(players_signedup_not_assigned):
-            # For every player check if that player is story player, if not continue
-            if not user.story_player:
-                continue
-            for signup in [s for s in user.signups if s.priority == prio]:
-                adventure = signup.adventure
-                # Only prefer story players on story adventures
-                if not adventure.is_story_adventure:
-                    continue
-                if try_to_signup_user_for_adventure(taken_places, players_signedup_not_assigned, adventure, user, assignment_map, preference_place=prio): 
-                    round_.append(user.display_name)
-                    break
-    current_app.logger.info(f"- Players assigned in round 2: #{len(round_)}: {round_} => {dict(taken_places)}")
-
-    # -- Third round of assigning players --
-    # Assign all players ranked by their karma to the first available adventure in there signups. 
-    round_ = []
-    for prio in range(1, MAX_PRIORITY + 1):
-        for user in list(players_signedup_not_assigned):
-            for signup in [s for s in user.signups if s.priority == prio]:
-                adventure = signup.adventure
-                if try_to_signup_user_for_adventure(taken_places, players_signedup_not_assigned, adventure, user, assignment_map, preference_place=prio): 
-                    round_.append(user.display_name)
-                    break
-    current_app.logger.info(f"- Players assigned in round 3: #{len(round_)}: {round_} => {dict(taken_places)}")
 
     adventures_this_week = (
         db.session.execute(
@@ -444,8 +309,8 @@ def assign_players_to_adventures(today=None):
         .all()
     )
 
-    # -- Fourth round of assigning players --
-    # Assign all players ranked by their karma to the first available adventure independent of any signups. 
+    # -- Second round of assigning players --
+    # Assign all players to the first available adventure independent of any signups.
     round_ = []
     for user in list(players_signedup_not_assigned):
         for adventure in adventures_this_week:
@@ -455,24 +320,37 @@ def assign_players_to_adventures(today=None):
                 if try_to_signup_user_for_adventure(taken_places, players_signedup_not_assigned, adventure, user, assignment_map, preference_place=4): 
                     round_.append(user.display_name)
                     break
-    current_app.logger.info(f"- Players assigned in round 4: #{len(round_)}: {round_} => {dict(taken_places)}")
+    current_app.logger.info(f"- Players assigned in round 2: #{len(round_)}: {round_} => {dict(taken_places)}")
 
 
-    # -- Fifth round of assigning players --
-    # Assign all players not assigned yet to the waiting list.
+    # -- Third round of assigning players --
+    # Assign all players not assigned yet to the waiting list of their event type/date.
     round_ = []
-    waiting_list = make_waiting_list()
-    current_app.logger.info(f"Waiting-list adventure: {waiting_list}")
     for user in list(players_signedup_not_assigned):
-        # For waiting list, no specific preference_place
-        if not try_to_signup_user_for_adventure(taken_places, players_signedup_not_assigned, waiting_list, user, assignment_map, preference_place=None):
-            current_app.logger.error(f"Failed to assign player {user.display_name} to waiting list!")
-    current_app.logger.info(f"- Players assigned in round 5: #{len(round_)}: {round_} => {dict(taken_places)}")
+        preferred_signup = sorted(user.signups, key=lambda s: s.priority)[0] if user.signups else None
+        event_type_id = preferred_signup.adventure.event_type_id if preferred_signup else None
+        waiting_date = preferred_signup.adventure.date if preferred_signup else end_of_week
+        waiting_list = make_waiting_list_for_event(event_type_id, waiting_date)
+
+        if try_to_signup_user_for_adventure(
+            taken_places,
+            players_signedup_not_assigned,
+            waiting_list,
+            user,
+            assignment_map,
+            preference_place=None,
+        ):
+            round_.append(user.display_name)
+        else:
+            current_app.logger.error(
+                f"Failed to assign player {user.display_name} to waiting list for event_type={event_type_id}, date={waiting_date}!"
+            )
+    current_app.logger.info(f"- Players assigned in round 3: #{len(round_)}: {round_} => {dict(taken_places)}")
 
     current_app.logger.info(f"Assigned players to adventures: {dict(assignment_map)}")
     db.session.commit()
 
-def reassign_players_from_waiting_list(today=None):
+def reassign_players_from_waiting_list(today=None, auto_commit=True):
     """
     Reassign players from the waiting list to newly opened slots in adventures this week.
     """
@@ -480,98 +358,102 @@ def reassign_players_from_waiting_list(today=None):
     start_of_week, end_of_week = get_upcoming_week(today)
     current_app.logger.info(f" <--- Reassigning players from waiting list for week {start_of_week} to {end_of_week} ---> ")
 
-    # Get the waiting list adventure
-    waiting_list = db.session.execute(
-        db.select(Adventure).where(Adventure.is_waitinglist == 1)
-    ).scalars().first()
-    if not waiting_list:
-        current_app.logger.info("No waiting list adventure found. Skipping reassignment.")
-        return
-
-    # Get all assignments on the waiting list
-    waiting_list_assignments = db.session.execute(
-        db.select(Assignment)
-        .join(Assignment.user)
-        .where(Assignment.adventure_id == waiting_list.id)
-        .options(db.contains_eager(Assignment.user))
-        .order_by(User.karma.desc())  # Prioritize by karma
+    # Get waiting list adventures in the target week.
+    waiting_lists = db.session.execute(
+        db.select(Adventure).where(
+            Adventure.is_waitinglist == 1,
+            Adventure.date >= start_of_week,
+            Adventure.date <= end_of_week,
+        )
     ).scalars().all()
 
-    if not waiting_list_assignments:
-        current_app.logger.info("No players on the waiting list. Skipping reassignment.")
+    if not waiting_lists:
+        current_app.logger.info("No waiting list adventure found. Skipping reassignment.")
         return
 
     # Track reassigned users for logging
     reassigned_users = []
 
-    for assignment in waiting_list_assignments:
-        user = assignment.user
-        assigned = False
-
-        # Find adventures this week that the user signed up for and have available slots
-        available_adventures = db.session.execute(
-            db.select(Adventure)
-            .outerjoin(Assignment, Assignment.adventure_id == Adventure.id)
-            .join(Signup, (Signup.adventure_id == Adventure.id) & (Signup.user_id == user.id))
-            .where(
-                Adventure.date >= start_of_week,
-                Adventure.date <= end_of_week,
-                Adventure.is_waitinglist == 0,  # Exclude waiting list
-            )
-            .group_by(Adventure.id)
-            .having(func.count(Assignment.user_id) < Adventure.max_players)
-            .order_by(
-                Signup.priority.asc(),  # 2. User's priority
-                func.random()           # 1. Random
-            ) 
+    for waiting_list in waiting_lists:
+        waiting_list_assignments = db.session.execute(
+            db.select(Assignment)
+            .join(Assignment.user)
+            .where(Assignment.adventure_id == waiting_list.id)
+            .options(db.contains_eager(Assignment.user))
+            .order_by(Assignment.creation_date.asc())
         ).scalars().all()
 
-        for adventure in available_adventures:
-            # Assign to the first available adventure
-            prio = db.session.execute(
-                db.select(Signup.priority)
-                .where(Signup.user_id == user.id, Signup.adventure_id == adventure.id)
-            ).scalar()
-            if prio is None:
-                prio = 4  # outside top three
-            new_assignment = Assignment(user=user, adventure=adventure, preference_place=prio)  # type: ignore
-            db.session.add(new_assignment)
+        for assignment in waiting_list_assignments:
+            user = assignment.user
+            assigned = False
 
-            # Remove from waiting list
-            db.session.delete(assignment)
+            # Find adventures in the same event/date bucket that the user signed up for and have available slots
+            available_adventures = db.session.execute(
+                db.select(Adventure)
+                .outerjoin(Assignment, Assignment.adventure_id == Adventure.id)
+                .join(Signup, (Signup.adventure_id == Adventure.id) & (Signup.user_id == user.id))
+                .where(
+                    Adventure.date == waiting_list.date,
+                    Adventure.event_type_id == waiting_list.event_type_id,
+                    Adventure.is_waitinglist == 0,
+                )
+                .group_by(Adventure.id)
+                .having(func.count(Assignment.user_id) < Adventure.max_players)
+                .order_by(
+                    Signup.priority.asc(),
+                    func.random(),
+                )
+            ).scalars().all()
 
-            reassigned_users.append((user.display_name, adventure.title))
-            assigned = True
-            break
+            for adventure in available_adventures:
+                prio = db.session.execute(
+                    db.select(Signup.priority)
+                    .where(Signup.user_id == user.id, Signup.adventure_id == adventure.id)
+                ).scalar()
+                if prio is None:
+                    prio = 4
+                new_assignment = Assignment(user=user, adventure=adventure, preference_place=prio)  # type: ignore
+                db.session.add(new_assignment)
+                db.session.delete(assignment)
+                reassigned_users.append((user, adventure.title))
+                assigned = True
+                break
 
-        if assigned:
-            continue
+            if assigned:
+                continue
 
-        # If no signed-up adventures are available, assign to any open adventure
-        fallback_adventures = db.session.execute(
-            db.select(Adventure)
-            .outerjoin(Assignment, Assignment.adventure_id == Adventure.id)
-            .where(
-                Adventure.date >= start_of_week,
-                Adventure.date <= end_of_week,
-                Adventure.is_waitinglist == 0,  # Exclude waiting list
-            )
-            .group_by(Adventure.id)
-            .having(func.count(Assignment.user_id) < Adventure.max_players)
-            .order_by(func.random())
-        ).scalars().all()
+            # If no signed-up adventures are available, assign to any open adventure in same event/date.
+            fallback_adventures = db.session.execute(
+                db.select(Adventure)
+                .outerjoin(Assignment, Assignment.adventure_id == Adventure.id)
+                .where(
+                    Adventure.date == waiting_list.date,
+                    Adventure.event_type_id == waiting_list.event_type_id,
+                    Adventure.is_waitinglist == 0,
+                )
+                .group_by(Adventure.id)
+                .having(func.count(Assignment.user_id) < Adventure.max_players)
+                .order_by(func.random())
+            ).scalars().all()
 
-        for adventure in fallback_adventures:
-            # Assigned outside top three preferences (no signup)
-            new_assignment = Assignment(user=user, adventure=adventure, preference_place=4)  # type: ignore
-            db.session.add(new_assignment)
-            db.session.delete(assignment)
-            reassigned_users.append((user.display_name, adventure.title))
-            break
+            for adventure in fallback_adventures:
+                new_assignment = Assignment(user=user, adventure=adventure, preference_place=4)  # type: ignore
+                db.session.add(new_assignment)
+                db.session.delete(assignment)
+                reassigned_users.append((user, adventure.title))
+                break
 
     if reassigned_users:
-        current_app.logger.info(f"Reassigned users from waiting list: {reassigned_users}")
+        current_app.logger.info(
+            f"Reassigned users from waiting list: {[(u.display_name, title) for u, title in reassigned_users]}"
+        )
+
+    if auto_commit and reassigned_users:
         db.session.commit()
+        for user, adventure_title in reassigned_users:
+            send_fcm_notification(user, "Reassigned from Waiting List", f"You have been moved from the waiting list to {adventure_title}!")
+
+    return reassigned_users
 
 
 def has_no_empty_params(rule):
@@ -581,116 +463,6 @@ def has_no_empty_params(rule):
 
 def get_google():
     return current_app.extensions["google_oauth"].client, current_app.extensions["google_oauth"].provider_cfg
-
-
-def reassign_karma(today=None):
-    today = today or date.today()
-    start_of_current_week, end_of_current_week = get_this_week(today)
-    current_app.logger.info(f"Reassigning karma for week {start_of_current_week} to {end_of_current_week}")
-
-    # DM: +500 karma for creating an adventure this week
-    creators = db.session.execute(
-        db.select(User)
-        .join(Adventure)
-        .where(
-            Adventure.date >= start_of_current_week,
-            Adventure.date <= end_of_current_week,
-            Adventure.exclude_from_karma.is_(False),
-        )
-        .distinct()
-    ).scalars().all()
-    for user in creators:
-        user.karma += 500
-    current_app.logger.info(f" - Assigned +500 karma to DMs: #{len(creators)}: {[user.display_name for user in creators]}")
-
-    # Not attending (non-waiting list): -500 karma
-    non_appearances = db.session.execute(
-        db.select(User)
-        .join(Assignment)
-        .join(Adventure)
-        .where(
-            Assignment.appeared.is_(False),
-            Adventure.is_waitinglist == 0,  # Ignore waiting list
-            Adventure.exclude_from_karma.is_(False),
-            Adventure.date >= start_of_current_week,
-            Adventure.date <= end_of_current_week
-        )
-    ).scalars().all()
-    for user in non_appearances:
-        user.karma -= 500
-    current_app.logger.info(f" - Assigned -500 karma to players who did not attend: #{len(non_appearances)}: {[user.display_name for user in non_appearances]}")
-
-    # Waiting list attending: +200 karma
-    waiting_attending = db.session.execute(
-        db.select(User)
-        .join(Assignment)
-        .join(Adventure)
-        .where(
-            Adventure.is_waitinglist == 1,
-            Assignment.appeared.is_(True),
-            Adventure.exclude_from_karma.is_(False),
-            Adventure.date >= start_of_current_week,
-            Adventure.date <= end_of_current_week
-        )
-        .distinct()
-    ).scalars().all()
-    for user in waiting_attending:
-        user.karma += 200
-    current_app.logger.info(f" - Assigned +200 karma to waiting-list attendees: #{len(waiting_attending)}: {[user.display_name for user in waiting_attending]}")
-
-    # Waiting list not attending: +180 karma
-    waiting_not_attending = db.session.execute(
-        db.select(User)
-        .join(Assignment)
-        .join(Adventure)
-        .where(
-            Adventure.is_waitinglist == 1,
-            Assignment.appeared.is_(False),
-            Adventure.exclude_from_karma.is_(False),
-            Adventure.date >= start_of_current_week,
-            Adventure.date <= end_of_current_week
-        )
-        .distinct()
-    ).scalars().all()
-    for user in waiting_not_attending:
-        user.karma += 180
-    current_app.logger.info(f" - Assigned +180 karma to waiting-list non-attendees: #{len(waiting_not_attending)}: {[user.display_name for user in waiting_not_attending]}")
-
-    # Choice-based points for players who attended non-waiting-list sessions
-    choice_points = {
-        1: 100,
-        2: 120,
-        3: 140,
-        4: 150,  # assigned outside top three
-    }
-    for prio, pts in choice_points.items():
-        users_for_prio = db.session.execute(
-            db.select(User)
-            .join(Assignment)
-            .join(Adventure)
-            .where(
-                Assignment.preference_place == prio,
-                Assignment.appeared.is_(True),
-                Adventure.is_waitinglist == 0,
-                Adventure.exclude_from_karma.is_(False),
-                Adventure.date >= start_of_current_week,
-                Adventure.date <= end_of_current_week,
-            )
-            .distinct()
-        ).scalars().all()
-        for user in users_for_prio:
-            user.karma += pts
-        current_app.logger.info(
-            f" - Assigned +{pts} karma to attendees with choice {prio}: #{len(users_for_prio)}: {[user.display_name for user in users_for_prio]}"
-        )
-    db.session.commit()
-
-def last_minute_cancel_punish(user_id: int):
-    db.session.execute(
-        db.update(User)
-        .where(User.id == user_id)
-        .values(karma=User.karma - 300)
-    )
 
 def send_fcm_notification(user, title, body, category=None, link="OPEN_APP"):
     """Sends a push notification to all devices registered by a specific user."""

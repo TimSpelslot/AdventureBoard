@@ -1,6 +1,5 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask_login import UserMixin, AnonymousUserMixin
-from sqlalchemy import func
 
 from .provider import db
 
@@ -36,19 +35,14 @@ class User(UserMixin, db.Model):
     google_id           = db.Column(db.String(100), nullable=False, unique=True)
     name                = db.Column(db.String(255), nullable=False)
     display_name        = db.Column(db.String(255), nullable=True)
-    world_builder_name  = db.Column(db.String(255), nullable=True)
-    dnd_beyond_name     = db.Column(db.String(255), nullable=True)
-    dnd_beyond_campaign = db.Column(db.Integer, nullable=True)
     privilege_level     = db.Column(db.Integer, nullable=False, default=0)
-    personal_room       = db.Column(db.String(16), nullable=True)
     email               = db.Column(db.String(255), nullable=True)
     profile_pic         = db.Column(db.String(512), nullable=True)
-    karma               = db.Column(db.Integer, default=1000)
-    story_player        = db.Column(db.Boolean, nullable=False, default=False)
 
     adventures_created  = db.relationship('Adventure', back_populates='creator', lazy='dynamic')
     signups             = db.relationship('Signup', back_populates='user')
     assignments         = db.relationship('Assignment', back_populates='user')
+    event_types_created = db.relationship('EventType', back_populates='creator')
 
     # Notification Toggles (Default to True)
     notify_new_adventure = db.Column(db.Boolean, default=True)
@@ -57,7 +51,7 @@ class User(UserMixin, db.Model):
     notify_create_adventure_reminder = db.Column(db.Boolean, default=False)
 
     def __repr__(self):
-        return f"<User(display_name='{self.display_name}', karma={self.karma}, privilege_level={self.privilege_level})>"
+        return f"<User(display_name='{self.display_name}', privilege_level={self.privilege_level})>"
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -65,24 +59,7 @@ class User(UserMixin, db.Model):
             self.display_name = self.name
 
     def is_finished(self):
-        return self.world_builder_name and self.dnd_beyond_name and self.display_name
-    
-    
-    @classmethod
-    def assign_campaign(cls):
-        """
-        Return an integer campaign id:
-         - 1..5 if any have < 6 users
-         - otherwise 6
-        """
-        MAX_USERS_PER_CAMPAIGN = 6
-        NUM_CAMPAIGNS = 5
-        for campaign_id in range(1, NUM_CAMPAIGNS+1):
-            stmt = db.select(func.count(cls.id)).where(cls.dnd_beyond_campaign == campaign_id)
-            count = db.session.scalar(stmt)
-            if count < MAX_USERS_PER_CAMPAIGN:
-                return campaign_id
-        return NUM_CAMPAIGNS+1
+        return self.display_name
 
     @classmethod
     def create(cls, commit=True, **kwargs):
@@ -92,9 +69,6 @@ class User(UserMixin, db.Model):
         Usage:
             user = User.create(google_id='x', name='Alice', email='a@b.com')
         """
-        if kwargs.get("dnd_beyond_campaign") is None:
-            kwargs["dnd_beyond_campaign"] = cls.assign_campaign()
-
         user = cls(**kwargs)
         db.session.add(user)
         if commit:
@@ -103,12 +77,7 @@ class User(UserMixin, db.Model):
     
     def is_setup(self) -> bool:
         """Check if all required fields are filled in."""
-        return all([
-            bool(self.display_name and self.display_name.strip()),
-            bool(self.world_builder_name and self.world_builder_name.strip()),
-            bool(self.dnd_beyond_name and self.dnd_beyond_name.strip()),
-            self.dnd_beyond_campaign is not None
-        ])
+        return bool(self.display_name and self.display_name.strip())
 
 
 
@@ -116,63 +85,32 @@ class Adventure(db.Model):
     __tablename__ = 'adventures'
 
     id                  = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    num_sessions        = db.Column(db.Integer, nullable=False, default=1)
-    predecessor_id      = db.Column(db.Integer, db.ForeignKey('adventures.id'), nullable=True)
     title               = db.Column(db.String(255), nullable=False)
     short_description   = db.Column(db.Text, nullable=False)
     user_id             = db.Column(db.Integer, db.ForeignKey('users.id')) # This is the creator
+    event_type_id       = db.Column(db.Integer, db.ForeignKey('event_types.id'), nullable=True)
     max_players         = db.Column(db.Integer, nullable=False, default=5)
     date                = db.Column(db.Date, nullable=False)
     tags                = db.Column(db.String(255), nullable=True)
-    requested_room      = db.Column(db.String(16), nullable=True)
-    release_assignments = db.Column(db.Boolean, nullable=False, default=False) # After this date assignments to this adventure are visible
-    rank_combat         = db.Column(db.Integer, nullable=False, default=0)
-    rank_exploration    = db.Column(db.Integer, nullable=False, default=0)
-    rank_roleplaying    = db.Column(db.Integer, nullable=False, default=0)
     is_waitinglist      = db.Column(db.Integer, nullable=False, default=0) # 0 = no, 1 = yes, 2 = was waitinglist
-    exclude_from_karma  = db.Column(db.Boolean, nullable=False, default=False)
-    is_story_adventure  = db.Column(db.Boolean, nullable=False, default=False)
 
-    predecessor     = db.relationship('Adventure', remote_side=[id], foreign_keys=[predecessor_id])
     creator         = db.relationship('User', back_populates='adventures_created')
+    event_type      = db.relationship('EventType', back_populates='adventures')
     signups         = db.relationship('Signup', back_populates='adventure')
     assignments     = db.relationship('Assignment', back_populates='adventure')
-    requested_players = db.relationship('AdventureRequestedPlayer', back_populates='adventure', cascade='all, delete-orphan')
 
     def __repr__(self):
         return f"<Adventure(id={self.id}, title='{self.title}')>"
     
     @classmethod
     def create(cls, commit=True, **kwargs) -> "Adventure":
-        """
-        Factory to create one or multiple Adventures. 
-        If num_sessions > 1, it creates that many adventures one week apart,
-        and wires up predecessor_id accordingly.
-        """
-        adventures = []
-        num_sessions = kwargs.get("num_sessions", 1)
-
-        # store the base date
-        base_date = kwargs["date"]
-
-        predecessor = None
-        for i in range(num_sessions):
-            # fresh copy of kwargs for each loop
-            data = dict(kwargs)
-            data["date"] = base_date + timedelta(days=7 * i)
-
-            adventure = cls(**data)
-            if predecessor:
-                adventure.predecessor = predecessor  # link to previous
-            adventures.append(adventure)
-            db.session.add(adventure)
-
-            predecessor = adventure  # move chain forward
-
+        """Factory to create a single Adventure."""
+        adventure = cls(**kwargs)
+        db.session.add(adventure)
         if commit:
             db.session.commit()
 
-        return adventures if num_sessions > 1 else adventures[0] # return first adventure created
+        return adventure
 
 class Assignment(db.Model):
     __tablename__ = 'assignments'
@@ -195,6 +133,29 @@ class Assignment(db.Model):
     def __repr__(self):
         return f"<Assignment(user_id={self.user_id}, adventure_id={self.adventure_id}, appeared={self.appeared}, preference_place={self.preference_place}, creation_date={self.creation_date})>"
 
+
+class EventType(db.Model):
+    __tablename__ = 'event_types'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    title = db.Column(db.String(255), nullable=False, unique=True)
+    description = db.Column(db.Text, nullable=True)
+    image_url = db.Column(db.String(1024), nullable=True)
+    weekday = db.Column(db.Integer, nullable=False)  # Monday=0 .. Sunday=6
+    week_of_month = db.Column(db.Integer, nullable=False)  # 1..5
+    exclude_july_august = db.Column(db.Boolean, nullable=False, default=False)
+    is_single_event = db.Column(db.Boolean, nullable=False, default=False)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
+
+    creator = db.relationship('User', back_populates='event_types_created')
+    adventures = db.relationship('Adventure', back_populates='event_type')
+
+    def __repr__(self):
+        return f"<EventType(id={self.id}, title='{self.title}', week_of_month={self.week_of_month}, weekday={self.weekday})>"
+
 class Signup(db.Model):
     __tablename__ = 'signups'
     __table_args__ = (
@@ -213,22 +174,3 @@ class Signup(db.Model):
 
     def __repr__(self):
         return f"<Signup(id={self.id}, user_id={self.user_id}, adventure_id={self.adventure_id}, priority={self.priority})>"
-
-class AdventureRequestedPlayer(db.Model):
-    """Tracks players that DMs have requested for their adventures.
-    These players will be prioritized during automatic assignment."""
-    __tablename__ = 'adventure_requested_players'
-    __table_args__ = (
-        db.UniqueConstraint('adventure_id', 'user_id', name='unique_adventure_requested_player'),
-    )
-
-    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    adventure_id = db.Column(db.Integer, db.ForeignKey('adventures.id'), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now())
-
-    adventure = db.relationship('Adventure', back_populates='requested_players')
-    user = db.relationship('User')
-
-    def __repr__(self):
-        return f"<AdventureRequestedPlayer(adventure_id={self.adventure_id}, user_id={self.user_id})>"

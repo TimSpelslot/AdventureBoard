@@ -29,60 +29,12 @@
             :max="30"
             :rules="[(val) => !!val || 'Field is required']"
           />
-          <DatePicker v-model="date" label="Date" onlyWednesdays />
+          <DatePicker v-model="date" label="Date" />
           <q-input
-            v-model="num_sessions"
-            label="Number of sessions"
-            type="number"
-            :min="1"
-            :max="4"
-            v-if="!editExisting"
-            :rules="[(val) => !!val || 'Field is required']"
-          />
-          <q-rating
-            v-model="rank_combat"
-            :max="3"
-            size="2em"
-            :icon="
-              $q.dark.isActive
-                ? 'img:/light/spiked-dragon-head.svg'
-                : 'img:/dark/spiked-dragon-head.svg'
-            "
-          />
-          <q-rating
-            v-model="rank_exploration"
-            :max="3"
-            size="2em"
-            :icon="
-              $q.dark.isActive
-                ? 'img:/light/dungeon-gate.svg'
-                : 'img:/dark/dungeon-gate.svg'
-            "
-          />
-          <q-rating
-            v-model="rank_roleplaying"
-            :max="3"
-            size="2em"
-            :icon="
-              $q.dark.isActive
-                ? 'img:/light/drama-masks.svg'
-                : 'img:/dark/drama-masks.svg'
-            "
-          />
-          <q-input
-            v-if="me.privilege_level >= 2"
-            v-model="requested_room"
-            label="Requested room"
-          />
-          <q-toggle
-            v-model="is_story_adventure"
-            label="Story adventure (prefers story players)"
-          />
-          <q-input v-model="tags" label="Tags" type="textarea" autogrow />
-          
-          <q-toggle
-            v-model="exclude_from_karma"
-            label="Exclude from karma generation"
+            v-model="tags"
+            label="Tags"
+            type="textarea"
+            autogrow
           />
         </div>
       </q-card-section>
@@ -119,21 +71,22 @@ export default defineComponent({
       type: Object,
       required: false,
     },
+    eventTypeId: {
+      type: Number,
+      required: false,
+    },
+    defaultDate: {
+      type: String,
+      required: false,
+    },
   },
   data() {
     return {
       title: this.editExisting?.title || '',
       short_description: this.editExisting?.short_description || '',
       max_players: this.editExisting?.max_players || 5,
-      date: this.editExisting?.date || '',
-      num_sessions: this.editExisting?.num_sessions || 1,
-      rank_combat: this.editExisting?.rank_combat || 0,
-      rank_exploration: this.editExisting?.rank_exploration || 0,
-      rank_roleplaying: this.editExisting?.rank_roleplaying || 0,
-      requested_room: this.editExisting?.requested_room || null,
+      date: this.editExisting?.date || this.defaultDate || '',
       tags: this.editExisting?.tags || null,
-      is_story_adventure: (this.editExisting as any)?.is_story_adventure ?? false,
-      exclude_from_karma: (this.editExisting as any)?.exclude_from_karma ?? false,
     };
   },
   computed: {
@@ -142,46 +95,15 @@ export default defineComponent({
     },
   },
   methods: {
-    isFirstWeekOfMonth(dateStr: string) {
-      if (!dateStr) {
-        return false;
-      }
-      const parsed = new Date(dateStr);
-      if (Number.isNaN(parsed.getTime())) {
-        return false;
-      }
-      return parsed.getDate() <= 7;
-    },
     async save() {
-      if (
-        this.rank_combat == 0 &&
-        this.rank_exploration == 0 &&
-        this.rank_roleplaying == 0
-      ) {
-        this.$q.notify({
-          message:
-            'You must indicate how much combat, exploration and roleplaying your session will roughly have.',
-          type: 'negative',
-        });
-        return;
-      }
       const body = {
         title: this.title,
         short_description: this.short_description,
         max_players: this.max_players,
         date: this.date,
-        num_sessions: this.num_sessions,
-        rank_combat: this.rank_combat,
-        rank_exploration: this.rank_exploration,
-        rank_roleplaying: this.rank_roleplaying,
+        event_type_id: this.eventTypeId,
         tags: this.tags,
-        is_story_adventure: this.is_story_adventure,
-        exclude_from_karma: this.exclude_from_karma,
       } as any;
-      // Only include requested_room if user is admin
-      if (this.me.privilege_level >= 2) {
-        body.requested_room = this.requested_room;
-      }
       if (this.editExisting) {
         await this.$api.patch('/api/adventures/' + this.editExisting.id, body);
       } else {
@@ -216,15 +138,6 @@ export default defineComponent({
   watch: {
     filledIn(v) {
       this.$emit('canClose', !v);
-    },
-    date: {
-      immediate: true,
-      handler(newDate) {
-        if (this.editExisting) {
-          return;
-        }
-        this.exclude_from_karma = this.isFirstWeekOfMonth(newDate);
-      },
     },
   },
 });
